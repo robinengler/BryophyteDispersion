@@ -36,25 +36,69 @@ if(!require("ecospat")){
 
 library(parallel)
 
+########################################
+# Part 0: Function used in this script #
+########################################
 
-### Fonction for kernel allowing to make an integration between the limits of a pixel ###
+### Fonction for computing the friction coefficient for the canopy height at the wind measurement ###
+## Present in Part 2
 
-kernel <- function(m,a,b,d,f,g,h,q){
-  # m the indices of a pixel value
-  # a corresponds to sigmaw values
-  # b corresponds to wind data
-  # d = canopy height
-  # f = spore release height
-  # g = settling velocity
-  # h and q corresponds to min and max distances between the source
-  
-  if(is.na(a[m])||is.na(b[m])||is.na(d[m])){return(NA)}
-  else{
-    return(integrate(f=function(x){return((f/(sqrt(0.3*d[m]*2*(a[m]/b[m]))*sqrt(2*pi*x^3)))*exp(-((x-(f*b[m]/g))^2)/(2*(0.3*d[m]*2*(a[m]/b[m]))*((b[m]^2)/g^2)*x)))},lower=h,upper=q)$value)
-  } #integrate based on the wald algorithm (Bullock et al. 2012)
+calcFricS <- function(wind){
+  return((wind * 0.4) / log(10/0.03))
 }
 
-### End of the fonction ###
+### Fonction for computing the friction coefficient with the canopy height of each pixels from friction coefficient at the canopy height from the measurement ###
+## Present in Part 2
+
+calcFricF <- function(fricS,hc){
+  return(fricS*(log(200)-log(0.03))/(log(200)-log(0.1*hc)))
+}
+
+### Fonction for kernel allowing to make an integration between the limits of a pixel ###
+## Present in Part 2
+
+## Parameters
+# d1 and d2 = the lower and the greater distance from the pixel source to the target pixel pixel
+# sigmaw = sigmaw raster
+# wind = wind speed raster
+# hc = canopy height raster
+# zo = spore release height
+# vset = the settling velocity
+
+kernel <- function(sigmaw,wind,hc){
+  
+  d1 <- get("d1")
+  d2 <- get("d2")
+  vset <- get("vset")
+  zo <- get("zo")
+  
+  if(is.na(sigmaw) || is.na(wind) ||is.na(hc)){return(NA)}
+  else{
+    return(integrate(Vectorize(function(x){return((zo/(sqrt(0.4*hc*2*(sigmaw/wind))*sqrt(2*pi*x^3)))*exp(-((x-(zo*wind/vset))^2)/(2*(0.4*hc*2*(sigmaw/wind))*((wind^2)/vset^2)*x)))}),lower=d1,upper=d2)$value)
+  } #integrate based on the wald algorithm (Bullock et al. 2012 & Katul et al. 2005)
+}
+
+
+### Change the wind at the different release heights based on two formula ###
+## Present in Part 2
+
+## Parameters
+# z = release height
+# hc = canopy height raster
+# fricF = friction cofficient calculated with the canopy height of the pixel 
+
+changeWind <- function(hc,fricF,z){
+  if(z < hc ){ # if the release if below hc, we apply the formula from .... with the alpha computation present in ....
+    alpha <- 0.24 + 0.096 * log(0.1*hc) + 0.016 * log(0.1*hc)^2
+    windHc <- (fricF/0.4) * log((hc-0.7*hc)/(0.1*hc))
+    return(windHc*exp(alpha*((z/hc)-1)))
+  }
+  else{ # if not, the wind is calculated with the log-profile wind speed
+    return((fricF/0.4)*log((z-0.7*hc)/(0.1*hc)))
+  }
+}
+
+### End of the function part ###
 
 #####################
 #   Part 1: SDMs    #
@@ -69,12 +113,19 @@ proj4string(IndVar2) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
 
 IndVar3 <- stack("Variables/_mp85bi50/bio_18.tif","Variables/_mp85bi50/bio_2.tif", "Variables/_mp85bi50/bio_4.tif", "Variables/_mp85bi50/bio_10.tif", "Variables/_mp85bi50/bio_13.tif")
 proj4string(IndVar3) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+
+IndVar4 <- stack("Variables/_he45bi50/bio_18.tif","Variables/_he45bi50/bio_2.tif", "Variables/_he45bi50/bio_4.tif", "Variables/_he45bi50/bio_10.tif", "Variables/_he45bi50/bio_13.tif")
+proj4string(IndVar4) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+
+IndVar5 <- stack("Variables/_he85bi50/bio_18.tif","Variables/_he85bi50/bio_2.tif", "Variables/_he85bi50/bio_4.tif", "Variables/_he85bi50/bio_10.tif", "Variables/_he85bi50/bio_13.tif")
+proj4string(IndVar5) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+
 v1 <- subset (IndVar, 1)
 
 biome<-shapefile("Variables/biomesEU2.shp")
 
 # All the studied species
-species <- c("Leje","Amphm","Plag","Amphl","Anas","Anom","Anth","Arct","Atri","Bart",
+species <- c("Amphm","Plag","Amphl","Anas","Anom","Anth","Arct","Atri","Bart",
              "Bazz","Cors","Cyno","Cyrt","Dicr","Dipla","Diplt","Fabr","Foss","Frul",
              "Glyph","Grim","Gymn","Habr","Herb","Homa","Lept","Leuc","Mast","Metz","Myur",
              "Ortha","Orthl","Oxym","Palu","Ptych","Sacc","Scle","Scor","Spha","Ulot")
@@ -107,7 +158,7 @@ for(i in 1:length(species)){
   myExpl <- data.frame (extract (IndVar, myResp.xy))
   
   # We used GLM and GBM to build the models. Each model techniques were run separately because we adapted the number of PA in function of the technics
- 
+  
   ## GLM part ##
   
   # Formating the data
@@ -300,13 +351,47 @@ for(i in 1:length(species)){
   MP852050<-raster(paste0(spName, "GBM/proj_2050MP85/proj_2050MP85_", spName, "GBM_ensemble.grd"))
   
   writeRaster (MP852050, paste0(spName,"Pred50MP85_GBM.tif"), datatype='INT2S', options="COMPRESS=LZW", overwrite=TRUE)
+  
+  myBiomomodProj2050HE45 <- BIOMOD_Projection(
+    modeling.output = myBiomodModelOut,
+    new.env = IndVar4,
+    proj.name = '2050HE45',
+    selected.models = 'all',
+    binary.meth = 'TSS',
+    clamping.mask = T)
+  
+  myBiomodEF <- BIOMOD_EnsembleForecasting(
+    projection.output = myBiomomodProj2050HE45,
+    EM.output = myBiomodEM )
+  
+  He452050<-raster(paste0(species[i], "GBM/proj_2050HE45/proj_2050HE45_", species[i], "GBM_ensemble.grd"))
+  
+  writeRaster (He452050, paste0(species[i],"Pred50HE45_GBM.tif"), datatype='INT2S', options="COMPRESS=LZW", overwrite=TRUE)
+  
+  
+  myBiomomodProj2050HE85 <- BIOMOD_Projection(
+    modeling.output = myBiomodModelOut,
+    new.env = IndVar5,
+    proj.name = '2050HE85',
+    selected.models = 'all',
+    binary.meth = 'TSS',
+    clamping.mask = T)
+  
+  myBiomodEF <- BIOMOD_EnsembleForecasting(
+    projection.output = myBiomomodProj2050HE85,
+    EM.output = myBiomodEM )
+  
+  He852050<-raster(paste0(species[i], "GBM/proj_2050HE85/proj_2050HE85_", species[i], "GBM_ensemble.grd"))
+  
+  writeRaster (He852050, paste0(species[i],"Pred50HE85_GBM.tif"), datatype='INT2S', options="COMPRESS=LZW", overwrite=TRUE)
   removeTmpFiles(h=0.1)
 }
 
 ## Merging the two technics by averaging the consensus maps
 ## Computing rasters between 2010 (present time) and 2050 
-
-e <- extent(raster("Variables/wind/WindMax_2011-2020_MPI45.tif")) # Extent used for the study
+wind <-raster("Variables_kernels/WindMax_2011-2020_HE85.tif")
+e <- extent(wind) # Extent used for the study
+valWind <- values(wind) # to remove areas where we don't have wind speed data
 
 for(i in 1: length(species)){
   
@@ -316,39 +401,75 @@ for(i in 1: length(species)){
   # Crop the different SDMs #
   presentGLM <- crop(raster(paste0(spName,"Pred_Pres_GLM.tif")),e)
   presentGBM <- crop(raster(paste0(spName,"Pred_Pres_GBM.tif")),e)
+  
+  HE45GLM <- crop(raster(paste0(spName,"GLM/",spName,"Pred50HE45_GLM.tif")),e)
+  HE45GBM <- crop(raster(paste0(spName,"GBM/",spName,"Pred50HE45_GBM.tif")),e)
+  HE85GLM <- crop(raster(paste0(spName,"GLM/",spName,"Pred50HE85_GLM.tif")),e)
+  HE85GBM <- crop(raster(paste0(spName,"GBM/",spName,"Pred50HE85_GBM.tif")),e)
+
   MP45GLM <- crop(raster(paste0(spName,"Pred50MP45_GLM.tif")),e)
   MP45GBM <- crop(raster(paste0(spName,"Pred50MP45_GBM.tif")),e)
   MP85GLM <- crop(raster(paste0(spName,"Pred50MP85_GLM.tif")),e)
   MP85GBM <- crop(raster(paste0(spName,"Pred50MP85_GBM.tif")),e)
-
+  
   # New Final map Formation
-  pres <- overlay(presentGLM,presentGBM,fun=function(x,y){return((x+y)/2)},filename= paste0(spName,"_Present.tif"),overwrite=T)
-  Mp45 <- overlay(MP45GLM,MP85GBM,fun=function(x,y){return((x+y)/2)},filename= paste0(spName,"_50MP45.tif"),overwrite=T)
-  MP85 <- overlay(MP85GLM,MP85GBM,fun=function(x,y){return((x+y)/2)},filename= paste0(spName,"_50MP85.tif"),overwrite=T)
+  pres <- overlay(presentGLM,presentGBM,fun=function(x,y){return((x+y)/2)})
+  writeRaster(pres,paste0(spName,"_Present.tif"),overwrite=T)
+  values(pres)[is.na(valWind)]=NA
+  writeRaster(pres,paste0("pour_MigClim/",spName,"_Present.tif"),overwrite=T)
+  HE45 <- overlay(HE45GLM,HE45GBM,fun=function(x,y){return((x+y)/2)})
+  writeRaster(HE45,paste0(spName,"_50HE45.tif"),overwrite=T)
+  values(HE45)[is.na(valWind)]=NA
+  writeRaster(HE45,paste0("pour_MigClim/",spName,"_50HE45.tif"),overwrite=T)
+  HE85 <- overlay(HE85GLM,HE85GBM,fun=function(x,y){return((x+y)/2)})
+  writeRaster(HE85,paste0(spName,"_50HE85.tif"),overwrite=T)
+  values(HE85)[is.na(valWind)]=NA
+  writeRaster(HE85,paste0("pour_MigClim/",spName,"_50HE85.tif"),overwrite=T)
+  
+  MP45 <- overlay(MP45GLM,MP45GBM,fun=function(x,y){return((x+y)/2)})
+  writeRaster(MP45,paste0(spName,"_50MP45.tif"),overwrite=T)
+  values(MP45)[is.na(valWind)]=NA
+  writeRaster(MP45,paste0("pour_MigClim/",spName,"_50MP45.tif"),overwrite=T)
+  MP85 <- overlay(MP85GLM,MP85GBM,fun=function(x,y){return((x+y)/2)})
+  writeRaster(MP85,paste0(spName,"_50MP85.tif"),overwrite=T)
+  values(MP85)[is.na(valWind)]=NA
+  writeRaster(MP85,paste0("pour_MigClim/",spName,"_50MP85.tif"),overwrite=T)
+  
+  # Computing maps between 2010 and 2050 (with the two scenarios)
+  c2020 <- overlay(pres,HE45, fun=function(x,y){return(0.75*x+0.25*y)},filename=paste0("pour_MigClim/",spName,"_20HE45.tif"),overwrite=T)
+  c2030 <- overlay(pres,HE45,fun=function(x,y){return(0.5*x+0.5*y)},filename=paste0("pour_MigClim/",spName,"_30HE45.tif"),overwrite=T)
+  c2040 <- overlay(pres,HE45,fun=function(x,y){return(0.25*x+0.75*y)},filename=paste0("pour_MigClim/",spName,"_40HE45.tif"),overwrite=T)
+  
+  c2020 <- overlay(pres,HE85, fun=function(x,y){return(0.75*x+0.25*y)},filename=paste0("pour_MigClim/",spName,"_20HE85.tif"),overwrite=T)
+  c2030 <- overlay(pres,HE85,fun=function(x,y){return(0.5*x+0.5*y)},filename=paste0("pour_MigClim/",spName,"_30HE85.tif"),overwrite=T)
+  c2040 <- overlay(pres,HE85,fun=function(x,y){return(0.25*x+0.75*y)},filename=paste0("pour_MigClim/",spName,"_40HE85.tif"),overwrite=T)
+  
   
   # Computing maps between 2010 and 2050 (with the two scenarios)
   c2020 <- overlay(pres,MP45, fun=function(x,y){return(0.75*x+0.25*y)},filename=paste0("pour_MigClim/",spName,"_20MP45.tif"),overwrite=T)
   c2030 <- overlay(pres,MP45,fun=function(x,y){return(0.5*x+0.5*y)},filename=paste0("pour_MigClim/",spName,"_30MP45.tif"),overwrite=T)
   c2040 <- overlay(pres,MP45,fun=function(x,y){return(0.25*x+0.75*y)},filename=paste0("pour_MigClim/",spName,"_40MP45.tif"),overwrite=T)
-  
+
   c2020 <- overlay(pres,MP85, fun=function(x,y){return(0.75*x+0.25*y)},filename=paste0("pour_MigClim/",spName,"_20MP85.tif"),overwrite=T)
   c2030 <- overlay(pres,MP85,fun=function(x,y){return(0.5*x+0.5*y)},filename=paste0("pour_MigClim/",spName,"_30MP85.tif"),overwrite=T)
   c2040 <- overlay(pres,MP85,fun=function(x,y){return(0.25*x+0.75*y)},filename=paste0("pour_MigClim/",spName,"_40MP85.tif"),overwrite=T)
-  
+
 }
+
 
 rm(list = ls())
 
 ########################################################
 
-###############################
-# Part 2 : kernel computation #
-###############################
+#######################################################
+# Part 2 : kernel computation and data preparation    #
+# Exemple with the scenario HadGem2-ES rcp 8.5 (HE85) #
+#######################################################
 
 ## Data loading and modification before the kernel computation ##
 # Species Name & spore diameter data #
 
-donnees <- read.table("tab_spore.csv",sep=";",dec=",",h=T) # A table containing the species names, the diameter spores (µm), and the kernel category allowing to regroup several species that have the same diameter spore (name of the column: Kernel)
+donnees <- read.table("tab_spore.csv",sep=";",dec=",",h=T) # A data.frame containing the species names, the diameter spores (µm), and the kernel category allowing to regroup several species that have the same diameter spore (name of the column: Kernel)
 catKern <- levels(donnees$Kernel)
 
 # Release height (m) #
@@ -356,329 +477,257 @@ catKern <- levels(donnees$Kernel)
 ZO <- c(0.03,1,10) 
 
 # Mean and max wind speed values (m/s) during a time period of 10 years #
-# scenario MPI rcp 8.5 #
 
 # Modified Data from Euro-Cordex to allow 1km pixel resolution
 
 # Mean wind speed
-windMean10 <- raster("Variables/wind/WindMean201101-202012_MPI85.tif") #2011-2020
-wMean10Val <- values(windMean10)
-windMean20 <- raster("Variables/wind/WindMean202101-203012_MPI85.tif") #2021-2030
-wMean20Val <- values(windMean20)
-windMean30 <- raster("Variables/wind/WindMean203101-204012_MPI85.tif") #2031-2040
-wMean30Val <- values(windMean30)
-windMean40 <- raster("Variables/wind/WindMean204101-205012_MPI85.tif") #2041-2050
-wMean40Val <- values(windMean40)
+windMean10 <- raster("Variables_Kernels/WindMean201101-202012_HE85.tif") #2011-2020
+windMean20 <- raster("Variables_Kernels/WindMean202101-203012_HE85.tif") #2021-2030
+windMean30 <- raster("Variables_Kernels/WindMean203101-204012_HE85.tif") #2031-2040
+windMean40 <- raster("Variables_Kernels/WindMean204101-205012_HE85.tif") #2041-2050
 
 # Max wind speed
-windMax10 <- raster("Variables/wind/WindMax_2011-2020_MPI85.tif") #2011-2020
-wMax10Val <- values(windMax10)
-windMax20 <- raster("Variables/wind/WindMax_2021-2030_MPI85.tif") #2021-2030
-wMax20Val <- values(windMax20)
-windMax30 <- raster("Variables/wind/WindMax_2031-2040_MPI85.tif") #2031-2040
-wMax30Val <- values(windMax30)
-windMax40 <- raster("Variables/wind/WindMax_2041-2050_MPI85.tif") #2041-2050
-wMax40Val <- values(windMax40)
+windMax10 <- raster("Variables_Kernels/WindMax_2011-2020_HE85.tif") #2011-2020
+windMax20 <- raster("Variables_Kernels/WindMax_2021-2030_HE85.tif") #2021-2030
+windMax30 <- raster("Variables_Kernels/WindMax_2031-2040_HE85.tif") #2031-2040
+windMax40 <- raster("Variables_Kernels/WindMax_2041-2050_HE85.tif") #2041-2050
 
 # Canopy height raster (m) #
 # Data from the NASA 1km resolution
-canop <- raster("Variables/canopy/europe_canop/w001001.adf")
+canop <- raster("Variables_Kernels/europe_canop/w001001.adf")
 values(canop)[values(canop)==0]=0.3 # Replace 0 values by 0.3 
-canopVal <- values(canop)
+canop <- crop(canop,extent(windMean10))
 
 ## Computing sigmaw ##
 
 # Step 1: determining friction velocity of our wind data with Z0=0.03 (canopy height = 30cm) #
 
-fricSMean10 <- overlay(windMean10,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMean20 <- overlay(windMean20,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMean30 <- overlay(windMean30,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMean40 <- overlay(windMean40,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMax10 <- overlay(windMax10,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMax20 <- overlay(windMax20,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMax30 <- overlay(windMax30,fun=function(x){return((x*0.4)/log(10/0.03))})
-fricSMax40 <- overlay(windMax40,fun=function(x){return((x*0.4)/log(10/0.03))})
+fricSMean10 <- calcFricS(windMean10)
+fricSMean20 <- calcFricS(windMean20)
+fricSMean30 <- calcFricS(windMean30)
+fricSMean40 <- calcFricS(windMean40)
+fricSMax10 <- calcFricS(windMax10)
+fricSMax20 <- calcFricS(windMax20)
+fricSMax30 <- calcFricS(windMax30)
+fricSMax40 <- calcFricS(windMax40)
 
 # Step 2: Computing the friction velocity at the canopy level
 
 # at 200m, u*_f = u*_s [log(200)-log(0.1*h_s)]/[log(200)-log(0.1*h_f)], where
 # u*_f = friction coefficient in a forest area (canopy height different of 0.3), u*_s = friction coefficient for our wind data (canopy height of 0.3)
-fricFMean10 <- overlay(fricSMean10,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMean20 <- overlay(fricSMean20,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMean30 <- overlay(fricSMean30,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMean40 <- overlay(fricSMean40,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMax10 <- overlay(fricSMax10,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMax20 <- overlay(fricSMax20,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMax30 <- overlay(fricSMax30,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
-fricFMax40 <- overlay(fricSMax40,canop,fun=function(x,y){return(x*(log(200)-log(0.03))/(log(200)-log(0.1*y)))})
+fricFMean10 <- calcFricF(fricSMean10,canop)
+fricFMean20 <- calcFricF(fricSMean20,canop)
+fricFMean30 <- calcFricF(fricSMean30,canop)
+fricFMean40 <- calcFricF(fricSMean40,canop)
+fricFMax10 <- calcFricF(fricSMax10,canop)
+fricFMax20 <- calcFricF(fricSMax20,canop)
+fricFMax30 <- calcFricF(fricSMax30,canop)
+fricFMax40 <- calcFricF(fricSMax40,canop)
 
 
 # Step 3: Depth-averaged vertical velocity standard deviation (m/s) #
 
 sigmawMean10 <- 1.25*fricFMean10
-siMean10Val <- values(sigmawMean10)
 sigmawMean20 <- 1.25*fricFMean20
-siMean20Val <- values(sigmawMean20)
 sigmawMean30 <- 1.25*fricFMean30
-siMean30Val <- values(sigmawMean30)
 sigmawMean40 <- 1.25*fricFMean40
-siMean40Val <- values(sigmawMean40)
 sigmawMax10 <- 1.25*fricFMax10
-siMax10Val <- values(sigmawMax10)
 sigmawMax20 <- 1.25*fricFMax20
-siMax20Val <- values(sigmawMax20)
 sigmawMax30 <- 1.25*fricFMax30
-siMax30Val <- values(sigmawMax30)
 sigmawMax40 <- 1.25*fricFMax40
-siMax40Val <- values(sigmawMax40)
 
 # Save the maps #
 
-writeRaster(sigmawMean10, paste0("Variables/sigmaw/sigmawMean10_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMean20, paste0("Variables/sigmaw/sigmawMean20_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMean30, paste0("Variables/sigmaw/sigmawMean30_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMean40, paste0("Variables/sigmaw/sigmawMean40_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMax10, paste0("Variables/sigmaw/sigmawMax10_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMax20, paste0("Variables/sigmaw/sigmawMax20_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMax30, paste0("Variables/sigmaw/sigmawMax30_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
-writeRaster(sigmawMax40, paste0("Variables/sigmaw/sigmawMax40_MP85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMean10, paste0("Variables_Kernels/sigmawMean10_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMean20, paste0("Variables_Kernels/sigmawMean20_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMean30, paste0("Variables_Kernels/sigmawMean30_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMean40, paste0("Variables_Kernels/sigmawMean40_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMax10, paste0("Variables_Kernels/sigmawMax10_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMax20, paste0("Variables_Kernels/sigmawMax20_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMax30, paste0("Variables_Kernels/sigmawMax30_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
+writeRaster(sigmawMax40, paste0("Variables_Kernels/sigmawMax40_HE85.tif"), datatype='FLT4S', overwrite=TRUE)
 
 
-siMean10Val <- values(sigmawMean10)
-siMean20Val <- values(sigmawMean20)
-siMean30Val <- values(sigmawMean30)
-siMean40Val <- values(sigmawMean40)
-siMax10Val <- values(sigmawMax10)
-siMax20Val <- values(sigmawMax20)
-siMax30Val <- values(sigmawMax30)
-siMax40Val <- values(sigmawMax40)
+## wind speed computation at the different release height
+z.003 <- windMean10
+values(z.003) = 0.03# release height
+windMean10.003 <- overlay(canop,fricFMean10,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean201101-202012_HE85-h03.tif", overwrite=TRUE)
+windMean20.003 <- overlay(canop,fricFMean20,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean202101-203012_HE85-h03.tif", overwrite=TRUE)
+windMean30.003 <- overlay(canop,fricFMean30,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean203101-204012_HE85-h03.tif", overwrite=TRUE)
+windMean40.003 <- overlay(canop,fricFMean40,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean204101-205012_HE85-h03.tif", overwrite=TRUE)
+windMax10.003 <- overlay(canop,fricFMax10,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2011-2020_HE85-h03.tif", overwrite=TRUE)
+windMax20.003 <- overlay(canop,fricFMax20,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2021-2030_HE85-h03.tif", overwrite=TRUE)
+windMax30.003 <- overlay(canop,fricFMax30,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2031-2040_HE85-h03.tif", overwrite=TRUE)
+windMax40.003 <- overlay(canop,fricFMax40,z.003,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2041-2050_HE85-h03.tif", overwrite=TRUE)
 
-# BaseMap #
+z.1 <- windMean10
+values(z.1) = 1 # release height
+windMean10.1 <- overlay(canop,fricFMean10,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean201101-202012_HE85-h1.tif", overwrite=TRUE)
+windMean20.1 <- overlay(canop,fricFMean20,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean202101-203012_HE85-h1.tif", overwrite=TRUE)
+windMean30.1 <- overlay(canop,fricFMean30,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean203101-204012_HE85-h1.tif", overwrite=TRUE)
+windMean40.1 <- overlay(canop,fricFMean40,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean204101-205012_HE85-h1.tif", overwrite=TRUE)
+windMax10.1 <- overlay(canop,fricFMax10,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2011-2020_HE85-h1.tif", overwrite=TRUE)
+windMax20.1 <- overlay(canop,fricFMax20,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2021-2030_HE85-h1.tif", overwrite=TRUE)
+windMax30.1 <- overlay(canop,fricFMax30,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2031-2040_HE85-h1.tif", overwrite=TRUE)
+windMax40.1 <- overlay(canop,fricFMax40,z.1,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2041-2050_HE85-h1.tif", overwrite=TRUE)
 
-# Here we used a wind speed raster and replace all the values by -9999
-baseMap <- raster("Variables/wind/WindMean201101-202012_MPI85.tif")
-values(baseMap)[!is.na(wMean10Val)]=-9999
-e <- extent(baseMap) # keep the extent of the map
+## 10 
+z.10 <- windMean10
+values(z.10) = 10# release height
+windMean10.10 <- overlay(canop,fricFMean10,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean201101-202012_HE85-h10.tif",overwrite=T)
+windMean20.10 <- overlay(canop,fricFMean20,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean202101-203012_HE85-h10.tif",overwrite=T)
+windMean30.10 <- overlay(canop,fricFMean30,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean203101-204012_HE85-h10.tif",overwrite=T)
+windMean40.10 <- overlay(canop,fricFMean40,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMean204101-205012_HE85-h10.tif",overwrite=T)
+windMax10.10 <- overlay(canop,fricFMax10,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2011-2020_HE85-h10.tif", overwrite=TRUE)
+windMax20.10 <- overlay(canop,fricFMax20,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2021-2030_HE85-h10.tif", overwrite=TRUE)
+windMax30.10 <- overlay(canop,fricFMax30,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2031-2040_HE85-h10.tif", overwrite=TRUE)
+windMax40.10 <- overlay(canop,fricFMax40,z.10,fun=Vectorize(changeWind),filename="Variables_Kernels/WindMax_2041-2050_HE85-h10.tif", overwrite=TRUE)
 
-# Remove all the variables that is not useful for the computation #
+# Remove unused objects
+rm(windMean10.003,windMean10.1,windMean10.10,windMean20.003,windMean20.1,windMean20.10,windMean30.003,windMean30.1,windMean30.10,
+   windMean40.003,windMean40.1,windMean40.10,windMax10.003,windMax10.1,windMax10.10,windMax20.003,windMax20.1,windMax20.10,windMax30.003,
+   windMax30.1,windMax30.10,windMax40.003,windMax40.1,windMax40.10,fricSMean10,fricSMean20,fricSMean30,fricSMean40,fricSMax10,fricSMax20,
+   fricSMax30,fricSMax40,fricFMean10,fricFMean20,fricFMean30,fricFMean40,fricFMax10,fricFMax20,fricFMax30,fricFMax40,windMean10,windMean20,
+   windMean30,windMean40,windMax10,windMax20,windMax30,windMax40)
 
-rm(sigmawMax10,sigmawMax20,sigmawMax30,sigmawMax40,sigmawMean10,sigmawMean20,sigmawMean30,sigmawMean40,
-   windMax10,windMax20,windMax30,windMax40,windMean10,windMean20,windMean30,windMean40,canop)
 
-### Part 2 : Kernel computing ###
+### Kernel computing part ###
 
-for(i in 1:length(catKern)){
+for(i in 1:length(catKern)){ # for each category of spore diameter
   
-  # Species names of those having the same spore diameter
-  spNames <- as.character(donnees[donnees$Kernel==catKern[i],1]) 
+  # Species having the same spore diameter
   
-  # Convert mean spore diameter in µm to m #
+  spore <- unique(donnees[donnees$Kernel==catKern[i],2])
   
-  spore <- unique(donnees[donnees$Kernel==catKern[i],2]) 
-  d3 <- spore*0.000001 
+  # Mean spore diameter (m) #
+  
+  d3 <- spore*0.000001
   
   # Stokes? Law relation for determining the settling velocity of small spherical particles #
+  # vset1 <- ((g*(d?)*(Pp-Pf))/(18*?)) #
   
-  # vset1 <- ((g*(d?)*(Pp-Pf))/(18*?)) 
-  vset1 <- ((9.81*(d3*d3)*(1100-1.225))/(18*(0.0000178)))
+  vset <- ((9.81*(d3*d3)*(1100-1.225))/(18*(0.0000178)))
   
-  for(k in 1 : length(ZO)){
+  for(k in 1 : length(ZO)){ # for each release height
+    # zo
+    zo <-  ZO[k]
+    d1 <- 500
+    d2 <- 1500
     
-    # release height
-    zo <- ZO[k]
-    d1 = 500 # the min distance between the source pixel and the nearest pixels (1km resolution)
-    d2 = 1500 # the max distance between the source pixel and the nearest pixels (1km resolution)
+    # Mean wind speed raster (m/s) at the release height #
     
-    stopVentMean <- 0 # Allows to stop the computation when the probability values = 0 everywhere 
-    stopVentMax <- 0 # Allows to stop the computation when the probability values = 0 everywhere 
+    windMean10 <- raster(paste0("Variables_Kernels/WindMean201101-202012_HE85-",nomHauteur[k],".tif"))
     
-    for(l in 1: 10){ #We consider that after 10km, we do not have SDD but a LDD
+    windMean20 <- raster(paste0("Variables_Kernels/WindMean202101-203012_HE85-",nomHauteur[k],".tif"))
+    
+    windMean30 <- raster(paste0("Variables_Kernels/WindMean203101-204012_HE85-",nomHauteur[k],".tif"))
+    
+    windMean40 <- raster(paste0("Variables_Kernels/WindMean204101-205012_HE85-",nomHauteur[k],".tif"))
+    
+    windMax10 <- raster(paste0("Variables_Kernels/WindMax_2011-2020_HE85-",nomHauteur[k],".tif"))
+    
+    windMax20 <- raster(paste0("Variables_Kernels/WindMax_2021-2030_HE85-",nomHauteur[k],".tif"))
+    
+    windMax30 <- raster(paste0("Variables_Kernels/WindMax_2031-2040_HE85-",nomHauteur[k],".tif"))
+    
+    windMax40 <- raster(paste0("Variables_Kernels/WindMax_2041-2050_HE85-",nomHauteur[k],".tif"))
+    
+    for(l in 1: 10){ # between 1km to 10km 
       
-      # Mean Wind #
+      surf1 <- ((pi*(d2^2))-(pi*(d1^2)))/1000000 #donuts surface
       
-      if(stopVentMean==0){
-        
-        # Computation of wald algorithm integration #
-        
-        kMean10 <- baseMap
-        # Here we used a parallelisation but if you do not have enough power compution, 
-        # you can use sapply instead of parSapply
-        cl <-makeCluster(detectCores()-1) 
-        # Use the fonction kernel on each pixel values of the raster
-        valMe10 <- parSapply(cl,1:length(siMean10Val),kernel,a=siMean10Val,b=wMean10Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMean10)=valMe10 # Add the computed values in the basemap
-        maxValMe10 <- max(valMe10,na.rm=T) #Allows to see if the probability if > 0
-        rm(valMe10)
-        
-        kMean20 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMe20 <- parSapply(cl,1:length(siMean20Val),kernel,a=siMean20Val,b=wMean20Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMean20)=valMe20
-        maxValMe20 <- max(valMe20,na.rm=T)
-        rm(valMe20)
-        
-        kMean30 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMe30 <- parSapply(cl,1:length(siMean30Val),kernel,a=siMean30Val,b=wMean30Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMean30)=valMe30
-        maxValMe30 <- max(valMe30,na.rm=T)
-        rm(valMe30)
-        
-        kMean40 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMe40 <- parSapply(cl,1:length(siMean40Val),kernel,a=siMean40Val,b=wMean40Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMean40)=valMe40
-        maxValMe40 <- max(valMe40,na.rm=T)
-        rm(valMe40)
-        
-        # Diffusion parameter into account #
-        
-        surf1 <- ((pi*(d2^2))-(pi*(d1^2)))/1000000 #give the number of pixels present at the same distance
-        
-        PDifMean10 <- overlay(kMean10, fun=function(a){return(a/surf1)})
-        PDifMean20 <- overlay(kMean20, fun=function(a){return(a/surf1)})
-        PDifMean30 <- overlay(kMean30, fun=function(a){return(a/surf1)})
-        PDifMean40 <- overlay(kMean40, fun=function(a){return(a/surf1)})
-        rm(kMean10,kMean20,kMean30,kMean40)
-        
-        # Successful Seeds calculation with coefficient (79.31) derived from Lonnel et al. 2012 with WALD reversely applied
-        
-        PDMean10 <- overlay(PDifMean10, fun=function(a){return(1-(1-a)^79.31)})
-        PDMean20 <- overlay(PDifMean20, fun=function(a){return(1-(1-a)^79.31)})
-        PDMean30 <- overlay(PDifMean30, fun=function(a){return(1-(1-a)^79.31)})
-        PDMean40 <- overlay(PDifMean40, fun=function(a){return(1-(1-a)^79.31)})
-        rm(PDifMean10,PDifMean20,PDifMean30,PDifMean40)
-        
-        # Make sure that the maps have the same extent with Na values corresponding to -9999
-        finMean10 <- crop(PDMean10, e)
-        crs(finMean10) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMean10) <- -9999
-        NAvalue(finMean10) <- -9999
-        
-        finMean20 <- crop(PDMean20, e)
-        crs(finMean20) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMean20) <- -9999
-        NAvalue(finMean20) <- -9999
-        
-        finMean30 <- crop(PDMean30, e)
-        crs(finMean30) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMean30) <- -9999
-        NAvalue(finMean30) <- -9999
-        
-        finMean40 <- crop(PDMean40, e)
-        crs(finMean40) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMean40) <- -9999
-        NAvalue(finMean40) <- -9999
-        
-        rm(PDMean10,PDMean40,PDMean30,PDMean20)
-      }
+      ## Wind Mean
+      # Computation for the different time period between 2020 and 2050 
+      kMean10 <- overlay(sigmawMean10,windMean10,canop,fun=Vectorize(kernel))
+      # Division of the probability with the diffusion parameter
+      PDifMean10 <- kMean10/surf1
+      rm(kMean10)
+      # Successful Seeds calculation with coefficient derived from L?nnel et al. 2012 with WALD reversely applied
+      PDMean10 <- 1-(1-PDifMean10)^764.53
+      rm(PDifMean10)
+      is.na(PDMean10) <- -9999
+      NAvalue(PDMean10) <- -9999
+      writeRaster(PDMean10, paste0("Kernels/HE85/MeanW/",zo,"/",catKern[i],"_", d1 ,"-",d2, "_1.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMean10)
       
-      # Max wind speed #
+      kMean20 <- overlay(sigmawMean20,windMean20,canop,fun=Vectorize(kernel))
+      PDifMean20 <- kMean20/surf1
+      rm(kMean20)
+      PDMean20 <- 1-(1-PDifMean20)^764.53
+      is.na(PDMean20) <- -9999
+      NAvalue(PDMean20) <- -9999
+      rm(PDifMean20)
+      writeRaster(PDMean20, paste0("Kernels/HE85/MeanW/",zo,"/",catKern[i],"_",d1 ,"-",d2, "_2.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMean20)
       
-      if(stopVentMax==0){
-        
-        kMax10 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMa10 <- parSapply(cl,1:length(siMax10Val),kernel,a=siMax10Val,b=wMax10Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMax10)=valMa10
-        maxValMa10 <- max(valMa10,na.rm=T)
-        rm(valMa10)
-        
-        kMax20 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMa20 <- parSapply(cl,1:length(siMax20Val),kernel,a=siMax20Val,b=wMax20Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMax20)=valMa20
-        maxValMa20 <- max(valMa20,na.rm=T)
-        rm(valMa20)
-        
-        kMax30 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMa30 <- parSapply(cl,1:length(siMax30Val),kernel,a=siMax30Val,b=wMax30Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMax30)=valMa30
-        maxValMa30 <- max(valMa30,na.rm=T)
-        rm(valMa30)
-        
-        kMax40 <- baseMap
-        cl <-makeCluster(detectCores()-1) 
-        valMa40 <- parSapply(cl,1:length(siMax40Val),kernel,a=siMax40Val,b=wMax40Val,d=canopVal,f=zo,g=vset1,h=d1,q=d2)
-        stopCluster(cl)
-        values(kMax40)=valMa40
-        maxValMa40 <- max(valMa40,na.rm=T)
-        rm(valMa40)
-        
-        # Diffusion parameter into account #
-        
-        surf1 <- ((pi*(d2^2))-(pi*(d1^2)))/1000000 
-        
-        PDifMax10 <- overlay(kMax10, fun=function(a){return(a/surf1)})
-        PDifMax20 <- overlay(kMax20, fun=function(a){return(a/surf1)})
-        PDifMax30 <- overlay(kMax30, fun=function(a){return(a/surf1)})
-        PDifMax40 <- overlay(kMax40, fun=function(a){return(a/surf1)})
-        rm(kMax10,kMax20,kMax30,kMax40)
-        
-        # Successful Seeds calculation with coefficient (79.31) derived from Lonnel et al. 2012 with WALD reversely applied
-        
-        PDMax10 <- overlay(PDifMax10, fun=function(a){return(1-(1-a)^79.31)})
-        PDMax20 <- overlay(PDifMax20, fun=function(a){return(1-(1-a)^79.31)})
-        PDMax30 <- overlay(PDifMax30, fun=function(a){return(1-(1-a)^79.31)})
-        PDMax40 <- overlay(PDifMax40, fun=function(a){return(1-(1-a)^79.31)})
-        rm(PDifMax10,PDifMax20,PDifMax30,PDifMax40)
-        
-        finMax10 <- crop(PDMax10, e)
-        crs(finMax10) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMax10) <- -9999
-        NAvalue(finMax10) <- -9999
-        
-        finMax20 <- crop(PDMax20, e)
-        crs(finMax20) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMax20) <- -9999
-        NAvalue(finMax20) <- -9999
-        
-        finMax30 <- crop(PDMax30, e)
-        crs(finMax30) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMax30) <- -9999
-        NAvalue(finMax10) <- -9999
-        
-        finMax40 <- crop(PDMax40, e)
-        crs(finMax40) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
-        is.na(finMax40) <- -9999
-        NAvalue(finMax10) <- -9999
-        rm(PDMax10,PDMax20,PDMax30,PDMax40)
-      }
+      kMean30 <- overlay(sigmawMean30,windMean30,canop,fun=Vectorize(kernel))
+      PDifMean30 <- kMean30/surf1
+      rm(kMean30)
+      PDMean30 <- 1-(1-PDifMean30)^764.53
+      rm(PDifMean30)
+      is.na(PDMean30) <- -9999
+      NAvalue(PDMean30) <- -9999
+      writeRaster(PDMean30, paste0("Kernels/HE85/MeanW/",zo,"/",catKern[i],"_", d1 ,"-",d2,"_3.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMean30)
       
-      # Check if the max probability value is > 0 #
       
-      if(maxValMe10==0 & maxValMe20==0 & maxValMe30==0 & maxValMe40==0){stopVentMean=1}
-      if(maxValMa10==0 & maxValMa20==0 & maxValMa30==0 & maxValMa40==0){stopVentMax=1}
+      kMean40 <- overlay(sigmawMean40,windMean40,canop,fun=Vectorize(kernel))
+      PDifMean40 <- kMean40/surf1
+      rm(kMean40)
+      PDMean40 <- 1-(1-PDifMean40)^764.53
+      rm(PDifMean40)
+      is.na(PDMean40) <- -9999
+      NAvalue(PDMean40) <- -9999
+      writeRaster(PDMean40, paste0("Kernels/HE85/MeanW/",zo,"/",catKern[i],"_",d1 ,"-",d2, "_4.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMean40)
       
-      # Save the created maps for all species of a same category #
       
-      for(j in 1 : length(spNames)){
-        
-        writeRaster(finMean10, paste0("Kernels/MP85/MeanW/",zo,"/", spNames[j],"_", d1 ,"-",d2, "_1.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMean20, paste0("Kernels/MP85/MeanW/",zo,"/", spNames[j],"_",d1 ,"-",d2, "_2.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMean30, paste0("Kernels/MP85/MeanW/",zo,"/", spNames[j],"_", d1 ,"-",d2,"_3.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMean40, paste0("Kernels/MP85/MeanW/",zo,"/", spNames[j],"_",d1 ,"-",d2, "_4.tif"), datatype='FLT4S', overwrite=TRUE)
-        
-        writeRaster(finMax10, paste0("Kernels/MP85/MaxW/",zo,"/", spNames[j],"_", d1 ,"-",d2,"_1.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMax20, paste0("Kernels/MP85/MaxW/",zo,"/", spNames[j],"_", d1 ,"-",d2,"_2.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMax30, paste0("Kernels/MP85/MaxW/",zo,"/", spNames[j],"_", d1 ,"-",d2,"_3.tif"), datatype='FLT4S', overwrite=TRUE)
-        writeRaster(finMax40, paste0("Kernels/MP85/MaxW/",zo,"/", spNames[j],"_", d1 ,"-",d2,"_4.tif"), datatype='FLT4S', overwrite=TRUE)
-        
-      }
+      ## Wind MAx
+      kMax10 <- overlay(sigmawMax10,windMax10,canop,fun=Vectorize(kernel))
+      PDifMax10 <- kMax10/surf1
+      rm(kMax10)
+      PDMax10 <- 1-(1-PDifMax10)^764.53
+      rm(PDifMax10)
+      is.na(PDMax10) <- -9999
+      NAvalue(PDMax10) <- -9999
+      writeRaster(PDMax10, paste0("Kernels/HE85/MaxW/",zo,"/", catKern[i],"_", d1 ,"-",d2,"_1.tif"), datatype='FLT4S', overwrite=TRUE)
       
-      removeTmpFiles(h=0.1) # Delete temporary files
-      d1 =d1 +1000 # Go to the next distance pixels
+      
+      kMax20 <- overlay(sigmawMax20,windMax20,canop,fun=Vectorize(kernel))
+      PDifMax20 <- kMax20/surf1
+      rm(kMax20)
+      PDMax20 <- 1-(1-PDifMax20)^764.53
+      rm(PDifMax20)
+      is.na(PDMax20) <- -9999
+      NAvalue(PDMax20) <- -9999
+      writeRaster(PDMax20, paste0("Kernels/HE85/MaxW/",zo,"/", catKern[i],"_", d1 ,"-",d2,"_2.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMax20)
+      
+      kMax30 <- overlay(sigmawMax30,windMax30,canop,fun=Vectorize(kernel))
+      PDifMax30 <- kMax30/surf1
+      rm(kMax30)
+      PDMax30 <- 1-(1-PDifMax30)^764.53
+      rm(PDifMax30)
+      is.na(PDMax30) <- -9999
+      NAvalue(PDMax30) <- -9999
+      writeRaster(PDMax30, paste0("Kernels/HE85/MaxW/",zo,"/", catKern[i],"_", d1 ,"-",d2,"_3.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMax30)
+      
+      kMax40 <- overlay(sigmawMax40,windMax40,canop,fun=Vectorize(kernel))
+      PDifMax40 <- kMax40/surf1
+      rm(kMax40)
+      PDMax40 <- 1-(1-PDifMax40)^764.53
+      rm(PDifMax40)
+      is.na(PDMax40) <- -9999
+      NAvalue(PDMax40) <- -9999
+      writeRaster(PDMax40, paste0("Kernels/HE85/MaxW/",zo,"/", catKern[i],"_", d1 ,"-",d2,"_4.tif"), datatype='FLT4S', overwrite=TRUE)
+      rm(PDMax40)
+      
+      removeTmpFiles(h=0.1)
+      d1 =d1 +1000 # increase the distance with the pixel size
       d2 =d2+1000
-      rm(finMax10,finMean10,finMean20,finMean30,finMean40,finMax30,finMax20,finMax40)
     }
     
   }
-}  
+  
+} 
