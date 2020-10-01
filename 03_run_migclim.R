@@ -42,7 +42,7 @@ stopifnot(nrow(species_table) == 40)
 simulation_table = read.table(simulation_file, h=T, sep='\t', 
                               as.is=T, stringsAsFactors=F, colClasses='character')
 simulation_list = 1:nrow(simulation_table)
-stopifnot(length(simulation_list) == 2400)
+stopifnot(length(simulation_list) == 4800)
 
 
 # Command line agruments (optional).
@@ -190,7 +190,7 @@ for(simulation_index in simulation_list){
         cat('###  -> delete some of replicated rasters. \n')
         if(replicate_nb > 5){
             for(i in 6:replicate_nb) unlink(file.path(simulation_name, 
-                                            paste0(simulation_name, '_', i, '_raster.asc')))
+                                            paste0(simulation_name, '_', i, '_raster.asc'))) 
         }
         # Move outputs to output directory. Text and raster files go into separate directories.
         cat('###  -> move data to output directory. \n')
