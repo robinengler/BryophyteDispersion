@@ -16,7 +16,7 @@ species_list = c('Amphl','Amphm','Anas','Anom','Anth','Arct','Atri','Bart','Bazz
                  'Herb','Homa','Lept','Leuc','Mast','Metz','Myur','Ortha','Orthl','Oxym','Palu',
                  'Plag','Ptych','Sacc','Scle','Scor','Spha','Ulot')
 
-cc_scenario_list     = c('mp45', 'mp85')
+cc_scenario_list     = c('mp45', 'mp85', 'he45', 'he85')
 wind_scenario_list   = c('maxW', 'meanW')
 release_height_list  = c('h03', 'h1', 'h10')
 env_change_year_list = c(2020, 2030, 2040, 2050)
@@ -163,7 +163,7 @@ simulation_table[,'simulation_name'] = paste0(simulation_table$species, '_',
                                               sapply(simulation_table$ldd_freq, 
                                                      FUN=function(x) which(x == ldd_freq_list)))
 stopifnot(nrow(simulation_table) == nrow(unique(simulation_table)))
-stopifnot(nrow(simulation_table) == 2400)
+stopifnot(nrow(simulation_table) == 4800)
 write.table(simulation_table, file=simulation_table_file, sep='\t',quote=F,row.names=F)
 rm(simulation_table_file, simulation_table)
 cat('###  -> completed. \n')
@@ -176,49 +176,55 @@ cat('### \n')
 ### Prepare dispersal kernel rasters.
 ### ********************************
 #
-# Loop through all species, 
+# Loop through all species,
+species_kernel <- read.table(file.path(original_data_dir,"tab_spore.csv"),sep="\t",dec=",",h=T)
+distance <- c("500-1500","1500-2500","2500-3500","3500-4500","4500-5500","5500-6500","6500-7500",
+              "7500-8500","8500-9500","9500-10500")
+
 cat('### Convert kernel rasters to ascii format:\n')
 for(species in species_list){
-        
-    # Create a subdirectory 
-    # If needed, create a sub-directory for current species.
-    species_dir = file.path(output_dir, species)
-    if(!dir.exists(species_dir) & !test_mode) dir.create(species_dir)
-    
-    # Loop through climate change scenarios, wind scenarios and release heights.
-    for(cc_scenario in cc_scenario_list){
+  
+  cat_kernel <- as.character(species_kernel[species_kernel$spName==species,"Kernel"]) #Category for the species kernel
+  # Create a subdirectory
+  # If needed, create a sub-directory for current species.
+  species_dir = file.path(output_dir, species)
+  if(!dir.exists(species_dir) & !test_mode) dir.create(species_dir)
+  
+  # Loop through climate change scenarios, wind scenarios and release heights.
+  for(cc_scenario in cc_scenario_list){
     for(wind_scenario in wind_scenario_list){
-    for(release_height in release_height_list){
-    for(year in env_change_year_list){
-        for(i in 1:10){
+      for(release_height in release_height_list){
+        for(year in env_change_year_list){
+          year_index = year/10 - 201
+          for(i in 1:10){
             # Progress report.
             cat("\r###  ->", species, cc_scenario, wind_scenario, release_height, year, ':', i)
             
             # Define input/output file names. Check the input file exists.
-            input_file = file.path(original_data_dir, 'kernels', cc_scenario, wind_scenario, 
-                                   release_height, paste0(species, '_', year, '_', i, '.tif'))
-            output_file = paste0(species_dir, '/kernel_', species, '_', cc_scenario, '_', 
-                                 wind_scenario, '_h', release_height, '_', year, '_', i,'.asc')
+            input_file = file.path(original_data_dir, 'kernels', cc_scenario, wind_scenario,
+                                   release_height, paste0(cat_kernel, '_', distance[i], '_', year_index, '.tif'))
+            output_file = paste0(species_dir, '/kernel_', species, '_', cc_scenario, '_',
+                                 wind_scenario, '_', release_height, '_', year, '_', i,'.asc')
             if(!file.exists(input_file)) stop('missing input file:', input_file)
             
             # Convert original raster to ascii format and write it to the correct location.
             if(!file.exists(output_file) & !test_mode){
-                # Write raster in ascii format to the output directory for the current migclim run.
-                input_raster = raster(input_file)
-                writeRaster(input_raster, filename=output_file, 
-                            format='ascii', datatype='FLT4S', overwrite=TRUE)
-                rm(input_raster)
+              # Write raster in ascii format to the output directory for the current migclim run.
+              input_raster = raster(input_file)
+              writeRaster(input_raster, filename=output_file,
+                          format='ascii', datatype='FLT4S', overwrite=TRUE)
+              rm(input_raster)
             }
+          }
+          # Print carriage return to start a new line the next time we print something.
+          cat(' \n')
+          rm(i, input_file, output_file)
         }
-        # Print carriage return to start a new line the next time we print something.
-        cat(' \n')
-        rm(i, input_file, output_file)
+      }
     }
-    }
-    }
-    }
+  }
 }
-rm(species, species_dir, cc_scenario, wind_scenario, release_height, year)
+rm(species, species_dir, cc_scenario, wind_scenario, release_height, year,year_index,species_kernel,cat_kernel)
 cat('###  -> completed. \n')
 cat('### \n')
 ####################################################################################################
@@ -228,110 +234,68 @@ cat('### \n')
 ####################################################################################################
 ### Prepare habitat suitability rasters.
 ### ***********************************
-### Reclass present (2010) projection to generate 'iniDist', the initial distribution of the 
-### species (1 = species is present, 0 = species is absent). 
+### Reclass present (2010) projection to generate 'iniDist', the initial distribution of the
+### species (1 = species is present, 0 = species is absent).
 ### Convert future projections (2020, 2030, 2040, 2050) to ascii grid format without reclassifying
 ### them (reclassification will be done in the migclim run directly).
-#
+
 cat('### Convert habitat suitability rasters to ascii format:\n')
+species_table <- read.table(file.path(output_dir,"species_table.txt"),sep="\t",h=T)
 for(species in species_list){
-    cat('### -> processing species:', species, '\n')    
-    species_dir = file.path(output_dir, species)
-    
-    # Reclass projections under current climate.
-    # *****************************************
-    cat('###  -> present \n')
-    
-    # Define input/output file names. Check the input file exists.
-    input_file = paste0(original_data_dir, '/sdm/', species, '_Present.tif')
-    output_file = paste0(species_dir, '/hsmap_', species, '_present.asc')
-    if(!file.exists(input_file)) stop('missing input file:', input_file)
-    
-    # Get max TSS reclassification threshold for the current species.
-    rc_threshold = species_table[which(species_table$species==species), 'max_TSS_threshold']
-    stopifnot(length(rc_threshold) == 1)
-    
-    # Reclass raster.
-    if(!file.exists(output_file) & !test_mode){
-        input_raster = raster(input_file)
-        tmp = calc(input_raster, fun=function(x){ifelse(x >= rc_threshold, 1, 0)}, 
-                   filename=output_file, format='ascii', datatype='INT2S', overwrite=TRUE)
-        rm(input_raster, tmp)
-    }
-    
-    
-    # Reclass projections under climate change scenarios.
-    # **************************************************
-    for(cc_scenario in cc_scenario_list){
+  cat('### -> processing species:', species, '\n')
+  species_dir = file.path(output_dir, species)
+
+  # Reclass projections under current climate.
+  # *****************************************
+  cat('###  -> present \n')
+
+  # Define input/output file names. Check the input file exists.
+  input_file = paste0(original_data_dir, '/sdm/', species, '_Present.tif')
+  output_file = paste0(species_dir, '/hsmap_', species, '_present.asc')
+  if(!file.exists(input_file)) stop('missing input file:', input_file)
+
+  # Get max TSS reclassification threshold for the current species.
+  rc_threshold = species_table[which(species_table$species==species), 'max_TSS_threshold']
+  stopifnot(length(rc_threshold) == 1)
+
+  # Reclass raster.
+  if(!file.exists(output_file) & !test_mode){
+    input_raster = raster(input_file)
+    tmp = calc(input_raster, fun=function(x){ifelse(x >= rc_threshold, 1, 0)},
+               filename=output_file, format='ascii', datatype='INT2S', overwrite=TRUE)
+    rm(input_raster, tmp)
+  }
+
+
+  # Reclass projections under climate change scenarios.
+  # **************************************************
+  for(cc_scenario in cc_scenario_list){
     for(year in env_change_year_list){
-        cat('###  ->', cc_scenario, year, ' \n')
-        
-        # Define input/output file names. Check the input file exists.
-        year_index = year/10 - 201
-        input_file = paste0(original_data_dir, '/sdm/', species, '_', 
-                            year-2000, toupper(cc_scenario), '.tif')
-        output_file = paste0(species_dir, '/hsmap_', 
-                             species, '_', cc_scenario, '_', year_index, '.asc')
-        if(!file.exists(input_file)) stop('missing input file:', input_file)
-        
-        # If output file is missing, generate it.
-        if(!file.exists(output_file) & !test_mode){
-            input_raster = raster(input_file)
-            NAvalue(input_raster) = -9999
-            writeRaster(input_raster, filename=output_file, 
-                        format='ascii', datatype='INT2S', overwrite=TRUE)
-            rm(input_raster)
-        }
+      cat('###  ->', cc_scenario, year, ' \n')
+
+      # Define input/output file names. Check the input file exists.
+      year_index = year/10 - 201
+      input_file = paste0(original_data_dir, '/sdm/', species, '_',
+                          year-2000, toupper(cc_scenario), '.tif')
+      output_file = paste0(species_dir, '/hsmap_',
+                           species, '_', cc_scenario, '_', year_index, '.asc')
+      if(!file.exists(input_file)) stop('missing input file:', input_file)
+
+      # If output file is missing, generate it.
+      if(!file.exists(output_file) & !test_mode){
+        input_raster = raster(input_file)
+        NAvalue(input_raster) = -9999
+        writeRaster(input_raster, filename=output_file,
+                    format='ascii', datatype='INT2S', overwrite=TRUE)
+        rm(input_raster)
+      }
     }
-    }
+  }
 }
 rm(species, species_dir, input_file, output_file, rc_threshold, cc_scenario, year, year_index)
 cat('###  -> completed. \n')
 cat('### \n')
 ####################################################################################################
-
-
-
-####################################################################################################
-### Prepare "simple kernel" files.
-### *****************************
-### Simple kernels files are just kernels that are spatially invariant (as opposed to the 
-### kernels we had in raster files form). This was an additional analysis that Alain and
-### Flavien wanted to make and I did these runs after the main runs (leading to non-optimal
-### scripts at times).
-cat('### Convert habitat suitability rasters to ascii format:\n')
-for(species in species_list){
-for(cc_scenario in cc_scenario_list){
-for(year in env_change_year_list){
-            
-    species_dir = file.path(output_dir, species)
-    year_index = year/10 - 201
-    input_file = paste0(original_data_dir, '/kernels_simple/',cc_scenario,'/', 
-                        species, '_',  year_index,'.txt')
-    
-    # Note: the reason why I added "_hsmap_" in the name of the simple kernel files is because
-    # of the hack I made in migclim to load a new kernel at each environmental change step (this
-    # hack is just for this particular set of simulations and will be removed after). 
-    # Naming the files in this way allows me to reuse the "hsmap" variable as is (no need to trim
-    # the 'hsmap_' part of it in the C code - although this must be fairly easy but I didn't have
-    # time to get better at C just now...)
-    output_file = paste0(species_dir, '/simple_kernel_hsmap_', 
-                         species, '_', cc_scenario, '_', year_index, '.txt')
-    if(!file.exists(input_file)) stop('missing input file:', input_file)
-    
-    # Load input file.
-    simple_kernel = read.table(input_file)
-    
-    # write kernel to output destination.
-    write.table(format(simple_kernel, scientific=F, digits=10), 
-                file=output_file, row.names=F, col.names=F, quote=F)
-}
-}
-}
-cat('###  -> completed. \n')
-cat('### \n')
-####################################################################################################
-    
 
 
 ####################################################################################################
@@ -341,41 +305,41 @@ cat('### \n')
 ### we create symlinks to the data for 2050.
 cat('### Generate symlinks for years 2060-2100:\n')
 for(species in species_list){
-    cat('### -> create symlinks for:', species, '\n')   
-    species_dir = file.path(output_dir, species)
-    
-    for(cc_scenario in cc_scenario_list){
+  cat('### -> create symlinks for:', species, '\n')   
+  species_dir = file.path(output_dir, species)
+  
+  for(cc_scenario in cc_scenario_list){
     for(year in c(2060,2070,2080,2090,2100)){
-                
-        # Symlink for dispersal kernels.
-        # *****************************
-        for(wind_scenario in wind_scenario_list){
+      
+      # Symlink for dispersal kernels.
+      # *****************************
+      for(wind_scenario in wind_scenario_list){
         for(release_height in release_height_list){
-        for(i in 1:10){
+          for(i in 1:10){
             target_file = paste0(species_dir, '/kernel_', species, '_', cc_scenario, '_', 
-                                wind_scenario, '_h', release_height, '_2050_', i, '.asc')
+                                 wind_scenario, '_', release_height, '_2050_', i, '.asc')
             symlink_file = paste0(species_dir, '/kernel_', species, '_', cc_scenario, '_', 
-                                  wind_scenario, '_h', release_height, '_', year, '_', i,'.asc')
+                                  wind_scenario, '_', release_height, '_', year, '_', i,'.asc')
             if(!file.exists(symlink_file) & !test_mode){
-                if(!file.exists(target_file)) stop('missing input file:', target_file)
-                file.symlink(basename(target_file), symlink_file)
+              if(!file.exists(target_file)) stop('missing input file:', target_file)
+              file.symlink(basename(target_file), symlink_file)
             }
+          }
         }
-        }
-        }
-        
-        # Symlinks for habitat suitability rasters.
-        # ****************************************
-        year_index = year/10 - 201
-        target_file = paste0(species_dir, '/hsmap_', species, '_', cc_scenario, '_4.asc')
-        symlink_file = paste0(species_dir, '/hsmap_', 
-                              species, '_', cc_scenario, '_', year_index, '.asc')
-        if(!file.exists(symlink_file) & !test_mode){
-            if(!file.exists(target_file)) stop('missing input file:', target_file)
-            file.symlink(basename(target_file), symlink_file)
-        }
+      }
+      
+      # Symlinks for habitat suitability rasters.
+      # ****************************************
+      year_index = year/10 - 201
+      target_file = paste0(species_dir, '/hsmap_', species, '_', cc_scenario, '_4.asc')
+      symlink_file = paste0(species_dir, '/hsmap_', 
+                            species, '_', cc_scenario, '_', year_index, '.asc')
+      if(!file.exists(symlink_file) & !test_mode){
+        if(!file.exists(target_file)) stop('missing input file:', target_file)
+        file.symlink(basename(target_file), symlink_file)
+      }
     }
-    }
+  }
 }
 rm(species, species_dir, cc_scenario, year, year_index, 
    wind_scenario, release_height, i, target_file, symlink_file)
