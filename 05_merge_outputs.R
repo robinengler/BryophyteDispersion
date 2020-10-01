@@ -40,22 +40,8 @@ if(!dir.exists(output_dir)) stop('directory does not exist:', output_dir, '\n')
 if(!file.exists(simulation_file)) stop('input file does not exist:', species_file, '\n')
 simulation_table = read.table(simulation_file, h=T, sep='\t', 
                               as.is=T, stringsAsFactors=F, colClasses='character')
-stopifnot(nrow(simulation_table) == 2400)
+stopifnot(nrow(simulation_table) == 4800)
 
-
-# Create list of "simple kernel" simulations.
-# ******************************************
-simulation_table2 = simulation_table
-simulation_table2[,'wind_speed']      = NA
-simulation_table2[,'release_height']  = NA
-simulation_table2[,'simulation_name'] = gsub('_maxW|_meanW|_h03|_h1|_h10', 
-                                            '', simulation_table2$simulation_name)
-simulation_table2[,'simulation_name'] = paste0(simulation_table2[,'simulation_name'],'_simplekernel')
-simulation_table2 = unique(simulation_table2)
-stopifnot(nrow(simulation_table2) == 400)
-
-# Global list of all simulations that were done.
-simulation_table = rbind(simulation_table, simulation_table2)
 ####################################################################################################
 
 
